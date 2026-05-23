@@ -12,20 +12,20 @@ import pennylane as qml
 from pennylane import numpy as np
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# DESIGN TOKENS (from design.md — NO PURPLE, NO BLUE)
+# DESIGN TOKENS — Modern SaaS Light Theme (Green Accent)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CLR_BG = "#F7F9F7"
-CLR_SURFACE = "#FFFFFF"
-CLR_PRIMARY = "#2E7D32"       # Forest Green
-CLR_WARNING = "#D84315"       # Burnt Orange
-CLR_TEXT = "#1F2924"          # Charcoal/Slate Green
-CLR_TEXT_MUTED = "#5E6C64"   # Muted Sage Gray
-CLR_SOLAR = "#FBC02D"         # Warm Yellow
-CLR_WIND = "#81C784"          # Light Green
-CLR_FOSSIL = "#8D6E63"        # Earth Brown
-CLR_HOSPITAL = "#EF5350"      # Priority Red
-CLR_INDUSTRIAL = "#FF8A65"    # Soft Orange
-CLR_RESIDENTIAL = "#A5D6A7"   # Soft Green
+CLR_BG = "#F4F7F4"            # Cool off-white background
+CLR_SURFACE = "#FFFFFF"       # Pure white cards
+CLR_PRIMARY = "#2E7D32"       # Light Green
+CLR_WARNING = "#FF7043"       # Soft Orange/Coral
+CLR_TEXT = "#111111"           # Black
+CLR_TEXT_MUTED = "#555555"    # Dark gray for subtitles/labels
+CLR_SOLAR = "#FFCE20"         # Pastel Yellow
+CLR_WIND = "#66BB6A"          # Soft Green (was blue)
+CLR_FOSSIL = "#E2E8F0"        # Neutral Light Gray
+CLR_HOSPITAL = "#FF5A5F"      # Soft Red
+CLR_INDUSTRIAL = "#43A047"    # Medium Green
+CLR_RESIDENTIAL = "#05CD99"   # Fresh Mint Green
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PAGE CONFIG
@@ -38,44 +38,127 @@ st.set_page_config(
 )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CUSTOM CSS — Premium executive dashboard aesthetic
+# CUSTOM CSS — Modern SaaS Analytics Theme (Green + Black)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 st.markdown(f"""
 <style>
-    /* ── Import premium font ── */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-    /* ── Global ── */
     html, body, [class*="css"] {{
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background-color: {CLR_BG} !important;
+        color: {CLR_TEXT} !important;
     }}
-    .stApp {{
-        background-color: {CLR_BG};
-    }}
+    .stApp {{ background-color: {CLR_BG}; color: {CLR_TEXT}; }}
 
-    /* ── Sidebar ── */
+    /* ── Sidebar Styling ── */
     section[data-testid="stSidebar"] {{
         background-color: {CLR_SURFACE};
-        border-right: 1px solid #E0E5E0;
+        border-right: none;
+        box-shadow: 2px 0px 20px rgba(112, 144, 176, 0.08);
     }}
-    section[data-testid="stSidebar"] .stMarkdown h3 {{
-        color: {CLR_TEXT};
+    section[data-testid="stSidebar"] h3 {{
+        color: {CLR_TEXT} !important;
         font-weight: 700;
-        letter-spacing: -0.02em;
+    }}
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] span {{
+        color: {CLR_TEXT} !important;
+    }}
+    
+    /* ── Metric Cards ── */
+    div[data-testid="metric-container"] {{
+        background: {CLR_SURFACE};
+        border: none;
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: 0px 18px 40px rgba(112, 144, 176, 0.12);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }}
+    div[data-testid="metric-container"]:hover {{
+        transform: translateY(-4px);
+        box-shadow: 0px 22px 48px rgba(112, 144, 176, 0.18);
+    }}
+    div[data-testid="stMetricLabel"] {{
+        color: {CLR_TEXT_MUTED} !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+    }}
+    div[data-testid="stMetricValue"] {{
+        color: {CLR_TEXT} !important;
+        font-weight: 800 !important;
+        font-size: 2.2rem !important;
     }}
 
-    /* ── Cards ── */
+    /* ── Action Button ── */
+    button[kind="primary"] {{
+        background: {CLR_PRIMARY} !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 12px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.5px !important;
+        padding: 0.75rem 0rem !important;
+        box-shadow: 0px 10px 20px rgba(46, 125, 50, 0.25) !important;
+        transition: all 0.3s ease !important;
+    }}
+    button[kind="primary"]:hover {{
+        box-shadow: 0px 14px 26px rgba(46, 125, 50, 0.4) !important;
+        transform: translateY(-2px);
+    }}
+
+    /* ── Headers & Texts ── */
+    .exec-header {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+    }}
+    .exec-header h1 {{ color: {CLR_TEXT}; font-weight: 800; letter-spacing: -0.5px; margin: 0; }}
+    .exec-subtitle {{ color: {CLR_TEXT_MUTED}; font-size: 0.85rem; font-weight: 500; margin-bottom: 24px; }}
+    .stApp label, .stApp p, .stApp span[data-baseweb="radio"] {{
+        color: {CLR_TEXT} !important;
+        font-weight: 500;
+    }}
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {{
+        color: {CLR_TEXT} !important;
+    }}
+    
+    /* ── Badges & Cards ── */
+    .status-badge {{
+        display: inline-block;
+        padding: 6px 16px;
+        border-radius: 8px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+    }}
+    .badge-optimized {{
+        background: rgba(46, 125, 50, 0.12);
+        color: {CLR_PRIMARY};
+    }}
+    .badge-unoptimized {{
+        background: rgba(255, 112, 67, 0.15);
+        color: {CLR_WARNING};
+    }}
+
+    /* ── Custom Metric Cards (HTML) ── */
     .metric-card {{
         background: {CLR_SURFACE};
-        border: 1px solid #E0E5E0;
-        border-radius: 12px;
+        border: none;
+        border-radius: 20px;
         padding: 24px;
         text-align: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-        transition: box-shadow 0.2s ease;
+        box-shadow: 0px 18px 40px rgba(112, 144, 176, 0.12);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
     }}
     .metric-card:hover {{
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        transform: translateY(-4px);
+        box-shadow: 0px 22px 48px rgba(112, 144, 176, 0.18);
     }}
     .metric-label {{
         font-size: 0.75rem;
@@ -90,6 +173,7 @@ st.markdown(f"""
         font-weight: 800;
         line-height: 1.1;
         letter-spacing: -0.03em;
+        color: {CLR_TEXT};
     }}
     .metric-unit {{
         font-size: 1rem;
@@ -97,51 +181,13 @@ st.markdown(f"""
         color: {CLR_TEXT_MUTED};
     }}
 
-    /* ── Executive Header ── */
-    .exec-header {{
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 8px;
-    }}
-    .exec-header h1 {{
-        font-size: 1.75rem;
-        font-weight: 800;
-        color: {CLR_TEXT};
-        letter-spacing: -0.03em;
-        margin: 0;
-    }}
-    .exec-subtitle {{
-        font-size: 0.85rem;
-        color: {CLR_TEXT_MUTED};
-        font-weight: 400;
-        margin-bottom: 24px;
-    }}
-    .status-badge {{
-        display: inline-block;
-        padding: 4px 14px;
-        border-radius: 20px;
-        font-size: 0.72rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-    }}
-    .badge-optimized {{
-        background: #E8F5E9;
-        color: {CLR_PRIMARY};
-    }}
-    .badge-unoptimized {{
-        background: #FBE9E7;
-        color: {CLR_WARNING};
-    }}
-
-    /* ── Result Card ── */
+    /* ── Results Cards ── */
     .result-card {{
-        background: linear-gradient(135deg, #E8F5E9 0%, #F1F8E9 100%);
-        border: 1px solid #C8E6C9;
-        border-left: 4px solid {CLR_PRIMARY};
-        border-radius: 8px;
-        padding: 16px 20px;
+        background: {CLR_SURFACE};
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: 0px 18px 40px rgba(112, 144, 176, 0.12);
+        border-left: 6px solid {CLR_PRIMARY};
         margin-top: 16px;
     }}
     .result-card p {{
@@ -149,18 +195,12 @@ st.markdown(f"""
         font-size: 0.9rem;
         color: {CLR_TEXT};
     }}
-    .result-card .highlight {{
-        font-weight: 700;
-        color: {CLR_PRIMARY};
-    }}
-
-    /* ── Warning Card ── */
     .warning-card {{
-        background: #FFF3E0;
-        border: 1px solid #FFE0B2;
-        border-left: 4px solid {CLR_WARNING};
-        border-radius: 8px;
-        padding: 16px 20px;
+        background: {CLR_SURFACE};
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: 0px 18px 40px rgba(112, 144, 176, 0.12);
+        border-left: 6px solid {CLR_WARNING};
         margin-top: 16px;
     }}
     .warning-card p {{
@@ -168,15 +208,18 @@ st.markdown(f"""
         font-size: 0.9rem;
         color: {CLR_TEXT};
     }}
+    .highlight {{ color: {CLR_PRIMARY}; font-weight: 800; }}
 
     /* ── Hide Streamlit default elements ── */
     #MainMenu {{visibility: hidden;}}
     footer {{visibility: hidden;}}
-    header {{visibility: hidden;}}
+    header {{background-color: transparent !important;}}
+    div[data-testid="stDecoration"] {{display: none !important;}}
+    .stDeployButton {{display: none !important;}}
 
     /* ── Button overrides ── */
     .stButton > button {{
-        border-radius: 8px;
+        border-radius: 12px;
         font-weight: 600;
         letter-spacing: 0.01em;
         transition: all 0.2s ease;
@@ -185,7 +228,7 @@ st.markdown(f"""
     /* ── Divider ── */
     .section-divider {{
         border: none;
-        border-top: 1px solid #E0E5E0;
+        border-top: 1px solid #E2E8F0;
         margin: 20px 0;
     }}
 </style>
@@ -458,13 +501,13 @@ def build_sankey(df, is_optimized):
         fig = go.Figure()
         fig.update_layout(
             height=420,
-            paper_bgcolor=CLR_BG,
-            plot_bgcolor=CLR_BG,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             annotations=[dict(
                 text="Awaiting grid data...",
                 x=0.5, y=0.5, xref="paper", yref="paper",
                 showarrow=False,
-                font=dict(size=16, color=CLR_TEXT_MUTED, family="Inter"),
+                font=dict(size=16, color=CLR_TEXT_MUTED, family="Plus Jakarta Sans"),
             )],
         )
         return fig
@@ -488,24 +531,24 @@ def build_sankey(df, is_optimized):
             targets.append(target_map[dst_name])
             values.append(flow)
 
-            # Color logic per design.md
+            # Color logic — Green Accent Theme
             if is_optimized:
                 if src_name == "Fossil Grid":
-                    link_colors.append("rgba(141, 110, 99, 0.35)")  # Faded fossil
+                    link_colors.append("rgba(226, 232, 240, 0.6)")   # Neutral Light Gray
                 else:
-                    link_colors.append("rgba(46, 125, 50, 0.45)")   # Forest Green
+                    link_colors.append("rgba(46, 125, 50, 0.35)")    # Light Green
             else:
                 if src_name == "Fossil Grid":
-                    link_colors.append("rgba(216, 67, 21, 0.5)")    # Burnt Orange
+                    link_colors.append("rgba(255, 112, 67, 0.4)")    # Soft Coral
                 else:
-                    link_colors.append("rgba(94, 108, 100, 0.3)")   # Muted
+                    link_colors.append("rgba(100, 100, 100, 0.25)")  # Neutral Gray
 
     fig = go.Figure(data=[go.Sankey(
         arrangement="snap",
         node=dict(
             pad=25,
             thickness=28,
-            line=dict(color="#E0E5E0", width=1),
+            line=dict(color="#E2E8F0", width=1),
             label=node_labels,
             color=node_colors,
             hovertemplate='%{label}<br>Total Flow: %{value:.1f} MW<extra></extra>',
@@ -525,14 +568,14 @@ def build_sankey(df, is_optimized):
     fig.update_layout(
         title=dict(
             text=title_text,
-            font=dict(size=16, color=title_color, family="Inter"),
+            font=dict(size=18, color=title_color, family="Plus Jakarta Sans"),
             x=0.0,
         ),
-        font=dict(size=12, family="Inter", color=CLR_TEXT),
+        font=dict(size=13, family="Plus Jakarta Sans", color="#111111"),
         height=440,
         margin=dict(l=20, r=20, t=50, b=20),
-        paper_bgcolor=CLR_BG,
-        plot_bgcolor=CLR_BG,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
@@ -805,3 +848,4 @@ st.markdown(f"""
     </span>
 </div>
 """, unsafe_allow_html=True)
+

@@ -10,6 +10,20 @@ import pandas as pd
 import plotly.graph_objects as go
 import pennylane as qml
 from pennylane import numpy as np
+import os
+import requests
+import json
+import plotly.express as px
+from plotly.subplots import make_subplots
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    pass
+from dotenv import load_dotenv
+load_dotenv()
+
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # DESIGN TOKENS — Modern SaaS Light Theme (Green Accent)
@@ -581,6 +595,603 @@ def build_sankey(df, is_optimized):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PAGE 2 HELPER FUNCTIONS (Search by Location & Carbon Audit)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def geocode_location(query, api_key):
+    if not api_key:
+        return None, None, "Google Maps API Key is missing. Please provide it in the sidebar override."
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {
+        "address": query,
+        "key": api_key
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        if data.get("status") == "OK":
+            location = data["results"][0]["geometry"]["location"]
+            return location["lat"], location["lng"], None
+        else:
+            return None, None, f"Geocoding failed: {data.get('status')}"
+    except Exception as e:
+        return None, None, f"Geocoding network error: {str(e)}"
+
+
+def fetch_real_time_grid_data(latitude: float, longitude: float) -> dict:
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current": "shortwave_radiation,wind_speed_10m"
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        current = data.get("current", {})
+        shortwave = current.get("shortwave_radiation", 0.0)
+        wind_speed = current.get("wind_speed_10m", 0.0)
+        
+        # Scale shortwave radiation (W/m2) to solar MW (clamped between 5 and 95)
+        solar_mw = float(np.clip(shortwave * 0.08, 5.0, 95.0))
+        # Scale wind speed (m/s) to wind MW (clamped between 5 and 90)
+        wind_mw = float(np.clip(wind_speed * 5.5, 5.0, 90.0))
+    except Exception:
+        # Robust fallbacks
+        solar_mw = 45.0
+        wind_mw = 30.0
+        
+    # Demand computed from coordinate hash to represent local profile
+    lat_h = int(abs(latitude * 17.0))
+    lon_h = int(abs(longitude * 31.0))
+    demand_mw = float(50.0 + ((lat_h + lon_h) % 60))
+    
+    # Fossil capacity fills the gap
+    fossil_mw = float(max(10.0, demand_mw - (solar_mw + wind_mw) + 15.0))
+    
+    return {
+        "solar_mw": round(solar_mw, 1),
+        "wind_mw": round(wind_mw, 1),
+        "fossil_mw": round(fossil_mw, 1),
+        "demand_mw": round(demand_mw, 1),
+        "latitude": latitude,
+        "longitude": longitude
+    }
+
+
+def generate_density_data(latitude, longitude, is_optimized, ratio_category):
+    # Generates synthetic coordinates for density heatmap
+    np_rand = np.random.default_rng(seed=42)
+    lats = []
+    lons = []
+    densities = []
+    
+    for i in range(100):
+        dlat = float(np_rand.normal(0, 0.015))
+        dlon = float(np_rand.normal(0, 0.015))
+        lats.append(latitude + dlat)
+        lons.append(longitude + dlon)
+        
+        dist = (dlat**2 + dlon**2)**0.5
+        base_density = max(0.1, 1.0 - dist / 0.05)
+        
+        if is_optimized:
+            # cool/low carbon density post optimization
+            densities.append(base_density * 0.25)
+        else:
+            # warm/heavy carbon density pre optimization
+            densities.append(base_density * 1.0)
+            
+    df = pd.DataFrame({
+        "lat": lats,
+        "lon": lons,
+        "density": densities
+    })
+    return df
+
+
+# 3-qubit device and circuit for Page 2 QAOA
+dev_p2 = qml.device("default.qubit", wires=3)
+
+@qml.qnode(dev_p2)
+def p2_qaoa_circuit(weights):
+    for i in range(3):
+        qml.Hadamard(wires=i)
+    
+    n_layers = len(weights) // 6
+    for layer in range(n_layers):
+        offset = layer * 6
+        for w in range(3):
+            qml.RX(weights[offset + w], wires=w)
+        for w in range(3):
+            qml.RZ(weights[offset + 3 + w], wires=w)
+        qml.CNOT(wires=[0, 1])
+        qml.CNOT(wires=[1, 2])
+        qml.CNOT(wires=[2, 0])
+        
+    return qml.probs(wires=[0, 1, 2])
+
+
+def p2_cost_function(weights, grid_data):
+    probs = p2_qaoa_circuit(weights)
+    
+    solar = grid_data["solar_mw"]
+    wind = grid_data["wind_mw"]
+    fossil = grid_data["fossil_mw"]
+    demand = grid_data["demand_mw"]
+    
+    cost = 0.0
+    for state_idx in range(8):
+        p = probs[state_idx]
+        b0 = (state_idx >> 2) & 1
+        b1 = (state_idx >> 1) & 1
+        b2 = state_idx & 1
+        
+        state_cost = 0.0
+        # Minimize fossil fuel reliance, reward renewable utilization
+        renewables_total = (solar * (0.6 + 0.4*b0)) + (wind * (0.6 + 0.4*b1))
+        
+        # Penalty for blackout if fossil suppressed but renewables not enough
+        if renewables_total < demand and b2 == 1:
+            state_cost += 12.0 * (demand - renewables_total)
+            
+        # Reward renewable allocation
+        state_cost -= 2.0 * b0 * solar
+        state_cost -= 2.0 * b1 * wind
+        
+        # Penalize fossil dependency
+        if b2 == 0:
+            state_cost += 3.5 * fossil
+        else:
+            state_cost += 0.4 * fossil
+            
+        cost += p * state_cost
+        
+    return cost
+
+
+def run_p2_optimization(grid_data):
+    weights = np.array(np.random.uniform(0.0, 2.0 * np.pi, 6), requires_grad=True)
+    opt = qml.GradientDescentOptimizer(stepsize=0.3)
+    
+    # 5 iterations of gradient descent
+    for step in range(5):
+        weights = opt.step(lambda w: p2_cost_function(w, grid_data), weights)
+        
+    probs = p2_qaoa_circuit(weights)
+    best_state = int(np.argmax(probs))
+    b0 = (best_state >> 2) & 1
+    b1 = (best_state >> 1) & 1
+    b2 = best_state & 1
+    
+    solar_opt = grid_data["solar_mw"] * (1.15 if b0 == 1 else 0.85)
+    wind_opt = grid_data["wind_mw"] * (1.20 if b1 == 1 else 0.80)
+    
+    gap = grid_data["demand_mw"] - (solar_opt + wind_opt)
+    if b2 == 1:
+        fossil_opt = max(10.0, gap)
+    else:
+        fossil_opt = max(10.0, gap + 15.0)
+        
+    solar_opt = max(5.0, min(95.0, solar_opt))
+    wind_opt = max(5.0, min(90.0, wind_opt))
+    fossil_opt = max(10.0, fossil_opt)
+    
+    return {
+        "solar_opt": round(solar_opt, 1),
+        "wind_opt": round(wind_opt, 1),
+        "fossil_opt": round(fossil_opt, 1),
+        "demand_mw": grid_data["demand_mw"],
+        "latitude": grid_data["latitude"],
+        "longitude": grid_data["longitude"]
+    }
+
+
+def generate_executive_audit(pre_opt, post_opt, gemini_key):
+    if not gemini_key:
+        return "Executive Carbon Audit is unavailable. Please provide a valid Gemini API Key."
+    
+    try:
+        client = genai.Client(api_key=gemini_key)
+        prompt = f"""
+        You are an expert executive carbon auditor advising municipal authorities. Write a professional, exactly 3-sentence "Executive Carbon Audit" summarizing the changes and environmental benefits of the quantum QAOA optimization from these metrics:
+        
+        Pre-Optimized:
+        - Solar Output: {pre_opt['solar_mw']} MW
+        - Wind Output: {pre_opt['wind_mw']} MW
+        - Fossil Output: {pre_opt['fossil_mw']} MW
+        - Grid Carbon Tax Rate: ${pre_opt['tax']}/ton
+        
+        Post-Optimized:
+        - Solar Output: {post_opt['solar_opt']} MW
+        - Wind Output: {post_opt['wind_opt']} MW
+        - Fossil Output: {post_opt['fossil_opt']} MW
+        - Grid Carbon Tax Rate: ${post_opt['tax']}/ton
+        - Hourly Carbon Tax Savings: ${post_opt['savings']:.2f}/hr
+        
+        Ensure you mention the transition to renewable sources, the exact reduction in fossil fuel usage, and the cost savings under the updated carbon tax bracket.
+        """
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"Unable to generate audit summary due to an API error: {str(e)}"
+
+
+
+
+def run_page_2(gemini_key, gmaps_key, mapbox_token, search_query):
+    # Initialize Page 2 Session State keys if not present
+    if "p2_grid_data" not in st.session_state:
+        st.session_state.p2_grid_data = None
+    if "p2_is_optimized" not in st.session_state:
+        st.session_state.p2_is_optimized = False
+    if "p2_optimized_data" not in st.session_state:
+        st.session_state.p2_optimized_data = None
+    if "p2_audit_text" not in st.session_state:
+        st.session_state.p2_audit_text = None
+    if "p2_last_geocoded" not in st.session_state:
+        st.session_state.p2_last_geocoded = None
+
+    # Load Mapbox Token globally if available and valid
+    mapbox_style = "carto-darkmatter"
+    if mapbox_token and mapbox_token.startswith("pk."):
+        try:
+            px.set_mapbox_access_token(mapbox_token)
+            mapbox_style = "dark"
+        except Exception:
+            pass
+
+
+    st.markdown("""
+    <div class="exec-header">
+        <h1>EcoGrid.AI Location Audit Terminal</h1>
+    </div>
+    <p class="exec-subtitle">Precision Carbon Audit & Quantum Renewable Energy Optimization · UN SDG 7</p>
+    """, unsafe_allow_html=True)
+
+    if not search_query:
+        st.info("🔍 Please enter a location in the sidebar search box to begin the audit.")
+        return
+
+    # Trigger geocoding & data fetch if location has changed
+    if st.session_state.p2_last_geocoded != search_query:
+        with st.spinner(f"🌐 Geocoding '{search_query}' via Google Maps API..."):
+            lat, lon, err = geocode_location(search_query, gmaps_key)
+            if err:
+                st.error(f"❌ Geocoding Error: {err}")
+                # Fallback to a default location (e.g. New Delhi: 28.6139, 77.2090) if query fails
+                st.warning("⚠️ Using fallback coordinates (New Delhi) due to geocoding failure.")
+                lat, lon = 28.6139, 77.2090
+            
+        with st.spinner("📊 Fetching real-time weather data & scaling grid parameters..."):
+            grid_data = fetch_real_time_grid_data(lat, lon)
+            st.session_state.p2_grid_data = grid_data
+            st.session_state.p2_last_geocoded = search_query
+            st.session_state.p2_is_optimized = False
+            st.session_state.p2_optimized_data = None
+            st.session_state.p2_audit_text = None
+
+    grid_data = st.session_state.p2_grid_data
+    if not grid_data:
+        st.error("No grid data available.")
+        return
+
+    lat = grid_data["latitude"]
+    lon = grid_data["longitude"]
+    solar = grid_data["solar_mw"]
+    wind = grid_data["wind_mw"]
+    fossil = grid_data["fossil_mw"]
+    demand = grid_data["demand_mw"]
+
+    # Calculate initial supply/demand ratio & categorization
+    total_supply = solar + wind + fossil
+    ratio = total_supply / max(demand, 1.0)
+    
+    if ratio >= 1.0:
+        status_badge = "Green"
+        status_class = "badge-optimized"
+        carbon_tax = 10  # $/ton
+        tax_color = CLR_PRIMARY
+        map_color_scale = "YlGn"
+    elif ratio >= 0.8:
+        status_badge = "Yellow"
+        status_class = "badge-unoptimized"
+        carbon_tax = 45  # $/ton
+        tax_color = CLR_WARNING
+        map_color_scale = "YlOrRd"
+    else:
+        status_badge = "Red"
+        status_class = "badge-unoptimized"
+        carbon_tax = 95  # $/ton
+        tax_color = CLR_HOSPITAL
+        map_color_scale = "Hot"
+
+    # Display Metrics Row
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Solar Output</div>
+            <div class="metric-value" style="color:{CLR_SOLAR}">{solar}<span class="metric-unit"> MW</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Wind Output</div>
+            <div class="metric-value" style="color:{CLR_WIND}">{wind}<span class="metric-unit"> MW</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Fossil Output</div>
+            <div class="metric-value" style="color:#8D6E63">{fossil}<span class="metric-unit"> MW</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Demand Load</div>
+            <div class="metric-value" style="color:{CLR_TEXT}">{demand}<span class="metric-unit"> MW</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col5:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Supply/Demand</div>
+            <div class="metric-value" style="color:{tax_color}">{ratio:.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col6:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Carbon Tax</div>
+            <div class="metric-value" style="color:{tax_color}">${carbon_tax}<span class="metric-unit">/t</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Layout for pre-optimized visualization (Charts & Heatmap side-by-side)
+    main_col1, main_col2 = st.columns([1, 1])
+
+    with main_col1:
+        st.subheader("📊 Pre-Optimized Energy Mix")
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            name="Available Power",
+            x=["Solar", "Wind", "Fossil"],
+            y=[solar, wind, fossil],
+            marker_color=[CLR_SOLAR, CLR_WIND, '#8D6E63']
+        ))
+        fig_bar.add_trace(go.Bar(
+            name="Demand Target",
+            x=["Total Demand"],
+            y=[demand],
+            marker_color=[CLR_TEXT_MUTED]
+        ))
+        fig_bar.update_layout(
+            barmode="group",
+            height=380,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Plus Jakarta Sans", size=12, color=CLR_TEXT),
+            margin=dict(l=20, r=20, t=30, b=20),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True, key="p2_pre_bar")
+
+    with main_col2:
+        st.subheader(f"🗺 Carbon Density Heatmap (Status: {status_badge})")
+        df_density = generate_density_data(lat, lon, st.session_state.p2_is_optimized, status_badge)
+        
+        fig_map = px.density_mapbox(
+            df_density,
+            lat="lat",
+            lon="lon",
+            z="density",
+            radius=24,
+            center=dict(lat=lat, lon=lon),
+            zoom=11,
+            mapbox_style=mapbox_style,
+            color_continuous_scale=map_color_scale,
+            opacity=0.6,
+        )
+        fig_map.update_layout(
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=380,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            coloraxis_showscale=False
+        )
+        st.plotly_chart(fig_map, use_container_width=True, key="p2_pre_map")
+
+    # Optimization Action Button
+    st.markdown("<hr class=\"section-divider\">", unsafe_allow_html=True)
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 1])
+    with btn_col2:
+        optimize_clicked = st.button(
+            "⚡ Run Quantum Grid Optimization" if not st.session_state.p2_is_optimized else "✅ Optimization Complete — Re-run",
+            use_container_width=True,
+            type="primary",
+            key="p2_btn_optimize",
+        )
+
+    if optimize_clicked:
+        with st.spinner("🔬 Running 3-Qubit PennyLane QAOA Circuit (5 gradient descent steps)..."):
+            opt_res = run_p2_optimization(grid_data)
+            st.session_state.p2_optimized_data = opt_res
+            st.session_state.p2_is_optimized = True
+            
+            solar_opt = opt_res["solar_opt"]
+            wind_opt = opt_res["wind_opt"]
+            fossil_opt = opt_res["fossil_opt"]
+            
+            opt_ratio = (solar_opt + wind_opt + fossil_opt) / max(demand, 1.0)
+            if opt_ratio >= 1.0:
+                opt_tax = 10
+            elif opt_ratio >= 0.8:
+                opt_tax = 45
+            else:
+                opt_tax = 95
+            
+            st.session_state.p2_optimized_data["ratio"] = opt_ratio
+            st.session_state.p2_optimized_data["tax"] = opt_tax
+            
+            old_hourly_tax = fossil * carbon_tax
+            new_hourly_tax = fossil_opt * opt_tax
+            savings = max(0.0, old_hourly_tax - new_hourly_tax)
+            st.session_state.p2_optimized_data["savings"] = savings
+            
+        with st.spinner("🤖 Generating Executive Carbon Audit via Gemini 2.5 Flash..."):
+            pre_opt_dict = {
+                "solar_mw": solar, "wind_mw": wind, "fossil_mw": fossil,
+                "demand_mw": demand, "tax": carbon_tax
+            }
+            post_opt_dict = {
+                "solar_opt": solar_opt, "wind_opt": wind_opt, "fossil_opt": fossil_opt,
+                "demand_mw": demand, "tax": opt_tax, "savings": savings
+            }
+            audit_text = generate_executive_audit(pre_opt_dict, post_opt_dict, gemini_key)
+            st.session_state.p2_audit_text = audit_text
+
+        st.success("✅ PennyLane QAOA routing optimized. Grid allocations updated.")
+        st.rerun()
+
+    # Post-Optimization View
+    if st.session_state.p2_is_optimized and st.session_state.p2_optimized_data:
+        opt_data = st.session_state.p2_optimized_data
+        solar_opt = opt_data["solar_opt"]
+        wind_opt = opt_data["wind_opt"]
+        fossil_opt = opt_data["fossil_opt"]
+        opt_ratio = opt_data["ratio"]
+        opt_tax = opt_data["tax"]
+        savings = opt_data["savings"]
+
+        st.markdown("<br><hr class=\"section-divider\">", unsafe_allow_html=True)
+        st.subheader("⚡ Post-Optimization Analysis")
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Optimized Supply/Demand</div>
+                <div class="metric-value" style="color:{CLR_PRIMARY}">{opt_ratio:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">New Carbon Tax</div>
+                <div class="metric-value" style="color:{CLR_PRIMARY}">${opt_tax}<span class="metric-unit">/t</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Fossil Suppression</div>
+                <div class="metric-value" style="color:{CLR_PRIMARY}">{int((1 - fossil_opt/fossil)*100)}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col4:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Hourly Savings</div>
+                <div class="metric-value" style="color:{CLR_PRIMARY}">${savings:.2f}<span class="metric-unit">/hr</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_c1, col_c2 = st.columns([1, 1])
+
+        with col_c1:
+            st.write("📊 **Side-by-Side Allocation Comparison**")
+            fig_comp = make_subplots(rows=1, cols=2, subplot_titles=("Before Optimization", "After Optimization"))
+            
+            fig_comp.add_trace(
+                go.Bar(name='Solar (Old)', x=['Solar'], y=[solar], marker_color=CLR_SOLAR, showlegend=False),
+                row=1, col=1
+            )
+            fig_comp.add_trace(
+                go.Bar(name='Wind (Old)', x=['Wind'], y=[wind], marker_color=CLR_WIND, showlegend=False),
+                row=1, col=1
+            )
+            fig_comp.add_trace(
+                go.Bar(name='Fossil (Old)', x=['Fossil'], y=[fossil], marker_color='#8D6E63', showlegend=False),
+                row=1, col=1
+            )
+            
+            fig_comp.add_trace(
+                go.Bar(name='Solar (New)', x=['Solar'], y=[solar_opt], marker_color=CLR_SOLAR, showlegend=False),
+                row=1, col=2
+            )
+            fig_comp.add_trace(
+                go.Bar(name='Wind (New)', x=['Wind'], y=[wind_opt], marker_color=CLR_WIND, showlegend=False),
+                row=1, col=2
+            )
+            fig_comp.add_trace(
+                go.Bar(name='Fossil (New)', x=['Fossil'], y=[fossil_opt], marker_color='#8D6E63', showlegend=False),
+                row=1, col=2
+            )
+            
+            fig_comp.update_layout(
+                height=380,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=40, b=20),
+                font=dict(family="Plus Jakarta Sans", size=12, color=CLR_TEXT)
+            )
+            st.plotly_chart(fig_comp, use_container_width=True, key="p2_post_bar")
+
+        with col_c2:
+            st.write("🗺 **Cooler Map Scale (Optimized Carbon Grid)**")
+            df_density_post = generate_density_data(lat, lon, True, "Green")
+            fig_map_post = px.density_mapbox(
+                df_density_post,
+                lat="lat",
+                lon="lon",
+                z="density",
+                radius=24,
+                center=dict(lat=lat, lon=lon),
+                zoom=11,
+                mapbox_style=mapbox_style,
+                color_continuous_scale="YlGnBu",
+                opacity=0.6,
+            )
+            fig_map_post.update_layout(
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=380,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_map_post, use_container_width=True, key="p2_post_map")
+
+        if st.session_state.p2_audit_text:
+            st.markdown(f"""
+            <div class="result-card">
+                <h4 style="color:{CLR_PRIMARY}; margin: 0 0 10px 0;">🌿 Executive Carbon Audit Summary (Gemini 2.5 Flash)</h4>
+                <p style="font-size: 1.05rem; line-height: 1.5; color:{CLR_TEXT}; font-style: italic;">
+                    "{st.session_state.p2_audit_text}"
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="text-align:center; padding: 8px 0;">
+        <span style="font-size:0.72rem; color:{CLR_TEXT_MUTED}; letter-spacing:0.04em;">
+            EcoGrid.AI v1.0 · Carbon Audit Terminal · 3-Qubit QAOA · google-genai SDK · Open-Meteo REST API · UN SDG 7
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 # ZONE B: SIDEBAR — Control Panel
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with st.sidebar:
@@ -594,91 +1205,129 @@ with st.sidebar:
 
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
-    # ── Master Toggle ──
-    st.markdown("### ⚙ Operation Mode")
-    mode = st.radio(
-        "Select mode",
-        ["Manual", "Simulated Events (Auto)"],
-        index=0 if st.session_state.mode == "Manual" else 1,
+    # ── Page Selector ──
+    st.markdown("### 🗺 Navigation")
+    page = st.selectbox(
+        "Select Page",
+        ["1. Local Model", "2. Search by Location (Carbon Audit)"],
         label_visibility="collapsed",
-        key="mode_radio",
+        key="navigation_page"
     )
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
-    # Detect mode change
-    new_mode = "Manual" if mode == "Manual" else "Auto"
-    if new_mode != st.session_state.mode:
-        st.session_state.mode = new_mode
-        st.session_state.is_optimized = False
+    if page == "2. Search by Location (Carbon Audit)":
+        gemini_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+        gmaps_key = os.environ.get("GOOGLE_MAPS_API_KEY") or st.secrets.get("GOOGLE_MAPS_API_KEY")
+        mapbox_token = os.environ.get("MAPBOX_TOKEN") or st.secrets.get("MAPBOX_TOKEN")
 
-    is_auto = st.session_state.mode == "Auto"
-
-    # ── Auto: Scenario Selector ──
-    if is_auto:
+        st.markdown("### 🔑 API Key Override")
+        gemini_key = st.text_input("Gemini API Key", value=gemini_key or "", type="password", key="p2_gemini_key_input")
+        gmaps_key = st.text_input("Google Maps API Key", value=gmaps_key or "", type="password", key="p2_gmaps_key_input")
+        mapbox_token = st.text_input("Mapbox Access Token", value=mapbox_token or "", type="password", key="p2_mapbox_token_input")
+        
         st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-        st.markdown("### 🌡 Crisis Scenario")
-        scenario = st.selectbox(
-            "Scenario",
-            list(CRISIS_PRESETS.keys()),
-            index=list(CRISIS_PRESETS.keys()).index(st.session_state.scenario),
+        st.markdown("### 🔍 Search Location")
+        search_query = st.text_input("Enter location:", value=st.session_state.get("p2_search_query", "New Delhi"), key="p2_search_input")
+        st.session_state["p2_search_query"] = search_query
+
+    elif page == "1. Local Model":
+        # ── Master Toggle ──
+        st.markdown("### ⚙ Operation Mode")
+        mode = st.radio(
+            "Select mode",
+            ["Manual", "Simulated Events (Auto)"],
+            index=0 if st.session_state.mode == "Manual" else 1,
             label_visibility="collapsed",
-            key="scenario_select",
+            key="mode_radio",
         )
-        if scenario != st.session_state.scenario:
-            st.session_state.scenario = scenario
+
+        # Detect mode change
+        new_mode = "Manual" if mode == "Manual" else "Auto"
+        if new_mode != st.session_state.mode:
+            st.session_state.mode = new_mode
             st.session_state.is_optimized = False
-        st.session_state.inputs = CRISIS_PRESETS[st.session_state.scenario].copy()
 
-    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+        is_auto = st.session_state.mode == "Auto"
 
-    # ── Generation Controls ──
-    st.markdown("### 🔋 Generation (MW)")
-    disabled = is_auto
+        # ── Auto: Scenario Selector ──
+        if is_auto:
+            st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+            st.markdown("### 🌡 Crisis Scenario")
+            scenario = st.selectbox(
+                "Scenario",
+                list(CRISIS_PRESETS.keys()),
+                index=list(CRISIS_PRESETS.keys()).index(st.session_state.scenario),
+                label_visibility="collapsed",
+                key="scenario_select",
+            )
+            if scenario != st.session_state.scenario:
+                st.session_state.scenario = scenario
+                st.session_state.is_optimized = False
+            st.session_state.inputs = CRISIS_PRESETS[st.session_state.scenario].copy()
 
-    solar_val = st.slider(
-        "☀ Solar Output", 0, 100, st.session_state.inputs["solar"],
-        disabled=disabled, key="sl_solar",
-    )
-    wind_val = st.slider(
-        "💨 Wind Output", 0, 100, st.session_state.inputs["wind"],
-        disabled=disabled, key="sl_wind",
-    )
-    fossil_val = st.slider(
-        "🏭 Fossil Backup", 0, 100, st.session_state.inputs["fossil"],
-        disabled=disabled, key="sl_fossil",
-    )
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
-    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+        # ── Generation Controls ──
+        st.markdown("### 🔋 Generation (MW)")
+        disabled = is_auto
 
-    # ── Demand Controls ──
-    st.markdown("### 📊 Demand (MW)")
-    hospital_val = st.slider(
-        "🏥 Hospital / Emergency", 0, 50, st.session_state.inputs["hospital"],
-        disabled=disabled, key="sl_hospital",
-    )
-    industrial_val = st.slider(
-        "🏗 Industrial", 0, 100, st.session_state.inputs["industrial"],
-        disabled=disabled, key="sl_industrial",
-    )
-    residential_val = st.slider(
-        "🏠 Residential", 0, 100, st.session_state.inputs["residential"],
-        disabled=disabled, key="sl_residential",
-    )
+        solar_val = st.slider(
+            "☀ Solar Output", 0, 100, st.session_state.inputs["solar"],
+            disabled=disabled, key="sl_solar",
+        )
+        wind_val = st.slider(
+            "💨 Wind Output", 0, 100, st.session_state.inputs["wind"],
+            disabled=disabled, key="sl_wind",
+        )
+        fossil_val = st.slider(
+            "🏭 Fossil Backup", 0, 100, st.session_state.inputs["fossil"],
+            disabled=disabled, key="sl_fossil",
+        )
 
-    # Update inputs from sliders if manual
-    if not is_auto:
-        new_inputs = {
-            "solar": solar_val,
-            "wind": wind_val,
-            "fossil": fossil_val,
-            "hospital": hospital_val,
-            "industrial": industrial_val,
-            "residential": residential_val,
-        }
-        inputs_hash = str(new_inputs)
-        if inputs_hash != st.session_state.prev_inputs_hash:
-            st.session_state.inputs = new_inputs
-            st.session_state.is_optimized = False
-            st.session_state.prev_inputs_hash = inputs_hash
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+        # ── Demand Controls ──
+        st.markdown("### 📊 Demand (MW)")
+        hospital_val = st.slider(
+            "🏥 Hospital / Emergency", 0, 50, st.session_state.inputs["hospital"],
+            disabled=disabled, key="sl_hospital",
+        )
+        industrial_val = st.slider(
+            "🏗 Industrial", 0, 100, st.session_state.inputs["industrial"],
+            disabled=disabled, key="sl_industrial",
+        )
+        residential_val = st.slider(
+            "🏠 Residential", 0, 100, st.session_state.inputs["residential"],
+            disabled=disabled, key="sl_residential",
+        )
+
+        # Update inputs from sliders if manual
+        if not is_auto:
+            new_inputs = {
+                "solar": solar_val,
+                "wind": wind_val,
+                "fossil": fossil_val,
+                "hospital": hospital_val,
+                "industrial": industrial_val,
+                "residential": residential_val,
+            }
+            inputs_hash = str(new_inputs)
+            if inputs_hash != st.session_state.prev_inputs_hash:
+                st.session_state.inputs = new_inputs
+                st.session_state.is_optimized = False
+                st.session_state.prev_inputs_hash = inputs_hash
+
+
+# If Page 2 is active, render Page 2 Main Body and then call st.stop()
+if page == "2. Search by Location (Carbon Audit)":
+    gemini_key = st.session_state.get("p2_gemini_key_input") or os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+    gmaps_key = st.session_state.get("p2_gmaps_key_input") or os.environ.get("GOOGLE_MAPS_API_KEY") or st.secrets.get("GOOGLE_MAPS_API_KEY")
+    mapbox_token = st.session_state.get("p2_mapbox_token_input") or os.environ.get("MAPBOX_TOKEN") or st.secrets.get("MAPBOX_TOKEN")
+    search_query = st.session_state.get("p2_search_query", "New Delhi")
+    
+    run_page_2(gemini_key, gmaps_key, mapbox_token, search_query)
+    st.stop()
+
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

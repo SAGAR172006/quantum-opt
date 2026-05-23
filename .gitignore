@@ -1,0 +1,12 @@
+# Environment variables
+.env
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Streamlit local configuration and secrets
+.streamlit/secrets.toml

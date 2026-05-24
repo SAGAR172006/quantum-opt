@@ -3,7 +3,6 @@
 [![UN SDG 7](https://img.shields.io/badge/UN%20SDG-7%20(Affordable%20%26%20Clean%20Energy)-green.svg)](https://sdgs.un.org/goals/goal7)
 [![PennyLane](https://img.shields.io/badge/Quantum-PennyLane%20QAOA-blueviolet.svg)](https://pennylane.ai/)
 [![Framework](https://img.shields.io/badge/UI-Streamlit%20Monolith-red.svg)](https://streamlit.io/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 EcoGrid.AI is an advanced, single-file analytics dashboard designed for smart city grid operators. By leveraging **Quantum Approximate Optimization Algorithms (QAOA)**, EcoGrid.AI dynamically routes volatile renewable energy from generation sources to urban demand zones, minimizing fossil fuel backup reliance and municipal carbon tax burdens under UN Sustainable Development Goal 7 (Affordable and Clean Energy).
 
@@ -125,6 +124,3 @@ python -m streamlit run app.py
 Open **[http://localhost:8501](http://localhost:8501)** in your browser to view the system terminal.
 
 ---
-
-## 📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
